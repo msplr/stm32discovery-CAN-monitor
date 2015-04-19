@@ -2,6 +2,7 @@
 #include <hal.h>
 #include <chprintf.h>
 #include <string.h>
+#include <shell.h>
 #include "usbcfg.h"
 
 static THD_WORKING_AREA(led_thread_wa, 128);
@@ -58,6 +59,9 @@ struct can_frame {
     } data;
 };
 
+SerialUSBDriver SDU1;
+BaseSequentialStream* stdout;
+
 #define CAN_RX_QUEUE_SIZE   512
 #define CAN_TX_QUEUE_SIZE   512
 
@@ -78,30 +82,30 @@ static THD_FUNCTION(can_tx_thread, arg) {
     while (1) {
         struct can_frame *framep;
         msg_t m = chMBFetch(&can_tx_queue, (msg_t *)&framep, TIME_INFINITE);
-        if (m == MSG_OK) {
-            CANTxFrame txf;
-            uint32_t id = framep->id;
-            txf.RTR = 0;
-            if (id & CAN_FRAME_EXT_FLAG) {
-                txf.SID = id & CAN_FRAME_EXT_ID_MASK;
-                txf.IDE = 1;
-            } else {
-                txf.SID = id & CAN_FRAME_STD_ID_MASK;
-                txf.IDE = 0;
-            }
-
-            if (id & CAN_FRAME_RTR_FLAG) {
-                txf.RTR = 1;
-            }
-
-            txf.DLC = framep->dlc;
-            txf.data32[0] = framep->data.u32[0];
-            txf.data32[1] = framep->data.u32[1];
-
-            chPoolFree(&can_tx_pool, framep);
-
-            canTransmit(&CAND1, CAN_ANY_MAILBOX, &txf, TIME_INFINITE);
+        if (m != MSG_OK) {
+            continue;
         }
+        CANTxFrame txf;
+        uint32_t id = framep->id;
+        txf.RTR = 0;
+        if (id & CAN_FRAME_EXT_FLAG) {
+            txf.SID = id & CAN_FRAME_EXT_ID_MASK;
+            txf.IDE = 1;
+        } else {
+            txf.SID = id & CAN_FRAME_STD_ID_MASK;
+            txf.IDE = 0;
+        }
+
+        if (id & CAN_FRAME_RTR_FLAG) {
+            txf.RTR = 1;
+        }
+
+        txf.DLC = framep->dlc;
+        txf.data32[0] = framep->data.u32[0];
+        txf.data32[1] = framep->data.u32[1];
+
+        chPoolFree(&can_tx_pool, framep);
+        canTransmit(&CAND1, CAN_ANY_MAILBOX, &txf, MS2ST(100));
     }
     return 0;
 }
@@ -164,9 +168,6 @@ void can_init(void)
     // canSTM32SetFilters(uint32_t can2sb, uint32_t num, const CANFilter *cfp);
 }
 
-SerialUSBDriver SDU1;
-BaseSequentialStream* stdout;
-
 char hex4(uint8_t b)
 {
     b &= 0x0f;
@@ -203,6 +204,29 @@ void print_can_frame(BaseSequentialStream *out, struct can_frame *f)
     palTogglePad(GPIOD, GPIOD_LED3);
 }
 
+static void cmd_candump(BaseSequentialStream *chp, int argc, char *argv[])
+{
+    (void)argc;
+    (void)argv;
+    while (1) {
+        if (palReadPad(GPIOA, GPIOA_BUTTON)) {
+            return;
+        }
+        struct can_frame *framep;
+        msg_t m = chMBFetch(&can_rx_queue, (msg_t *)&framep, MS2ST(100));
+        if (m != MSG_OK) {
+            continue;
+        }
+        print_can_frame(chp, framep);
+        chPoolFree(&can_rx_pool, framep);
+    }
+}
+
+const ShellCommand shell_commands[] = {
+  {"candump", cmd_candump},
+  {NULL, NULL}
+};
+
 int main(void) {
     halInit();
     chSysInit();
@@ -230,13 +254,21 @@ int main(void) {
         // can_bridge_run(stdout);
     }
 
-    while (1) {
-        struct can_frame *framep;
-        msg_t m = chMBFetch(&can_rx_queue, (msg_t *)&framep, TIME_INFINITE);
-        if (m != MSG_OK) {
-            continue;
+    shellInit();
+    static thread_t *shelltp = NULL;
+    static ShellConfig shell_cfg;
+    shell_cfg.sc_channel = (BaseSequentialStream*)&SDU1;
+    shell_cfg.sc_commands = shell_commands;
+    while (true) {
+        if (!shelltp) {
+            if (SDU1.config->usbp->state == USB_ACTIVE) {
+                shelltp = shellCreate(&shell_cfg, THD_WORKING_AREA_SIZE(2048), NORMALPRIO);
+            }
+        } else if (chThdTerminatedX(shelltp)) {
+            chThdRelease(shelltp);
+            shelltp = NULL;
         }
-        print_can_frame(stdout, framep);
+        chThdSleepMilliseconds(500);
     }
     return 0;
 }
