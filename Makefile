@@ -78,7 +78,7 @@ CSRC = $(PORTSRC) \
        $(PLATFORMSRC) \
        $(CHIBIOS)/os/hal/lib/streams/chprintf.c \
        $(CHIBIOS)/os/various/shell.c \
-       src/board.c src/main.c
+       src/board.c src/main.c src/usbcfg.c
 
 # C++ sources that can be compiled in ARM or THUMB mode depending on the global
 # setting.
@@ -179,3 +179,7 @@ ULIBS =
 
 RULESPATH = $(CHIBIOS)/os/common/ports/ARMCMx/compilers/GCC
 include $(RULESPATH)/rules.mk
+
+.PHONY: flash
+flash: all
+	openocd -f oocd.cfg -c "program build/ch.elf verify reset" -c "shutdown"
