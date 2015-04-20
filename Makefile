@@ -54,20 +54,32 @@ USE_FPU = hard
 # Project, sources and paths
 #
 
+BOARD = stm32f3discovery
+# BOARD = stm32f4discovery
+
 # Define project name here
 PROJECT = ch
 
 # Imported source files and paths
 CHIBIOS = ChibiOS
 include $(CHIBIOS)/os/hal/hal.mk
-include $(CHIBIOS)/os/hal/ports/STM32/STM32F4xx/platform.mk
 include $(CHIBIOS)/os/hal/osal/rt/osal.mk
 include $(CHIBIOS)/os/rt/rt.mk
-include $(CHIBIOS)/os/rt/ports/ARMCMx/compilers/GCC/mk/port_stm32f4xx.mk
 include src/src.mk
 
-# Define linker script file here
+ifeq ($(BOARD),stm32f3discovery)
+include $(CHIBIOS)/os/hal/ports/STM32/STM32F3xx/platform.mk
+include $(CHIBIOS)/os/rt/ports/ARMCMx/compilers/GCC/mk/port_stm32f3xx.mk
+include src/stm32f3discovery/board.mk
+LDSCRIPT= $(PORTLD)/STM32F303xC.ld
+endif
+ifeq ($(BOARD),stm32f4discovery)
+include $(CHIBIOS)/os/hal/ports/STM32/STM32F4xx/platform.mk
+include $(CHIBIOS)/os/rt/ports/ARMCMx/compilers/GCC/mk/port_stm32f4xx.mk
+include src/stm32f4discovery/board.mk
 LDSCRIPT= $(PORTLD)/STM32F407xG.ld
+endif
+
 
 # C sources that can be compiled in ARM or THUMB mode depending on the global
 # setting.
@@ -79,6 +91,7 @@ CSRC = $(PORTSRC) \
        $(PLATFORMSRC) \
        $(CHIBIOS)/os/hal/lib/streams/chprintf.c \
        $(CHIBIOS)/os/various/shell.c \
+       $(BOARDSRC) \
        $(PROJCSRC)
 
 # C++ sources that can be compiled in ARM or THUMB mode depending on the global
@@ -111,7 +124,7 @@ ASMSRC = $(PORTASM)
 INCDIR = $(PORTINC) $(KERNINC) $(TESTINC) \
          $(HALINC) $(OSALINC) $(PLATFORMINC) \
          $(CHIBIOS)/os/hal/lib/streams/ $(CHIBIOS)/os/various/ \
-         $(PROJINC)
+         $(BOARDINC) $(PROJINC)
 
 #
 # Project, sources and paths

@@ -7,33 +7,26 @@
 #include <serial-datagram/serial_datagram.h>
 #include "usbcfg.h"
 
-static THD_WORKING_AREA(led_thread_wa, 128);
-static THD_FUNCTION(led_thread, arg) {
-    (void)arg;
-    chRegSetThreadName("led");
-    while (1) {
-        palSetPad(GPIOD, GPIOD_LED4);
-        chThdSleepMilliseconds(80);
-        palClearPad(GPIOD, GPIOD_LED4);
-        chThdSleepMilliseconds(80);
-        palSetPad(GPIOD, GPIOD_LED4);
-        chThdSleepMilliseconds(80);
-        palClearPad(GPIOD, GPIOD_LED4);
-        chThdSleepMilliseconds(760);
-    }
-    return 0;
-}
-
 static const CANConfig can1_config = {
     .mcr = (1 << 6)  /* Automatic bus-off management enabled. */
          | (1 << 2), /* Message are prioritized by order of arrival. */
 
-    /* APB Clock is 42 Mhz, bitrate 1Mhz */
+#if defined(BOARD_ST_STM32F3_DISCOVERY)
+    /* APB Clock is 36 Mhz
+       36MHz / 2 / (1tq + 10tq + 7tq) = 1MHz => 1Mbit */
+    .btr = (1 << 0)  /* Baudrate prescaler (10 bits) */
+         | (9 << 16)/* Time segment 1 (3 bits) */
+         | (6 << 20) /* Time segment 2 (3 bits) */
+         | (0 << 24) /* Resync jump width (2 bits) */
+#elif defined(BOARD_ST_STM32F4_DISCOVERY)
+    /* APB Clock is 42 Mhz
+       42MHz / 2 / (1tq + 12tq + 8tq) = 1MHz => 1Mbit */
     .btr = (1 << 0)  /* Baudrate prescaler (10 bits) */
          | (11 << 16)/* Time segment 1 (3 bits) */
          | (7 << 20) /* Time segment 2 (3 bits) */
          | (0 << 24) /* Resync jump width (2 bits) */
-#if 1
+#endif
+#if 0
          | (1 << 30) /* Loopback mode enabled */
 #endif
 };
@@ -143,6 +136,15 @@ void can_init(void)
     chPoolObjectInit(&can_tx_pool, sizeof(struct can_frame), NULL);
     chPoolLoadArray(&can_tx_pool, tx_pool_buf, sizeof(tx_pool_buf)/sizeof(struct can_frame));
 
+#if defined(BOARD_ST_STM32F3_DISCOVERY)
+    // CAN gpio init
+    iomode_t mode = PAL_STM32_MODE_ALTERNATE | PAL_STM32_OTYPE_PUSHPULL
+        | PAL_STM32_OSPEED_HIGHEST | PAL_STM32_PUDR_FLOATING
+        | PAL_STM32_ALTERNATE(9);
+    palSetPadMode(GPIOB, GPIOB_PIN8, mode); // RX
+    palSetPadMode(GPIOB, GPIOB_PIN9, mode); // TX
+    canStart(&CAND1, &can1_config);
+#elif defined(BOARD_ST_STM32F4_DISCOVERY)
     // CAN1 gpio init
     iomode_t mode = PAL_STM32_MODE_ALTERNATE | PAL_STM32_OTYPE_PUSHPULL
         | PAL_STM32_OSPEED_HIGHEST | PAL_STM32_PUDR_FLOATING
@@ -151,6 +153,7 @@ void can_init(void)
     palSetPadMode(GPIOD, GPIOD_PIN1, mode); // TX
     canStart(&CAND1, &can1_config);
     // canSTM32SetFilters(uint32_t can2sb, uint32_t num, const CANFilter *cfp);
+#endif
 }
 
 char hex4(uint8_t b)
@@ -215,10 +218,9 @@ int main(void) {
     halInit();
     chSysInit();
 
-    // LED
-    chThdCreateStatic(led_thread_wa, sizeof(led_thread_wa), NORMALPRIO, led_thread, NULL);
-
     // USB Serial Driver
+    usbStop(serusbcfg.usbp);
+    chThdSleepMilliseconds(100);
     sduObjectInit(&SDU1);
     sduStart(&SDU1, &serusbcfg);
     usbDisconnectBus(serusbcfg.usbp);
@@ -241,14 +243,14 @@ int main(void) {
     chThdCreateStatic(can_rx_thread_wa, sizeof(can_rx_thread_wa), NORMALPRIO, can_rx_thread, NULL);
 
     if (run_bridge) {
-        palSetPad(GPIOD, GPIOD_LED6);
+        LED_BLUE(1);
         can_bridge((BaseAsynchronousChannel *)&SDU1);
         while (1) {
             chThdSleepMilliseconds(100);
         }
     }
 
-    palSetPad(GPIOD, GPIOD_LED3);
+    LED_GREEN(1);
     shellInit();
     static thread_t *shelltp = NULL;
     static ShellConfig shell_cfg;

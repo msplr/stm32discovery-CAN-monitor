@@ -2,7 +2,6 @@ dependency-dir: ./src/
 
 target.arm:
     - src/main.c
-    - src/board.c
     - src/usbcfg.c
 
 depends:

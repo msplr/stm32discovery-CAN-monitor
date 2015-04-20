@@ -1282,6 +1282,11 @@
                                      PIN_AFIO_AF(GPIOI_PIN14, 0) |          \
                                      PIN_AFIO_AF(GPIOI_PIN15, 0))
 
+#define LED_RED(x) {if (x) palSetPad(GPIOD, GPIOD_LED5); else palClearPad(GPIOD, GPIOD_LED5);}
+#define LED_GREEN(x) {if (x) palSetPad(GPIOD, GPIOD_LED4); else palClearPad(GPIOD, GPIOD_LED4);}
+#define LED_BLUE(x) {if (x) palSetPad(GPIOD, GPIOD_LED6); else palClearPad(GPIOD, GPIOD_LED6);}
+#define LED_ORANGE(x) {if (x) palSetPad(GPIOD, GPIOD_LED3); else palClearPad(GPIOD, GPIOD_LED3);}
+
 
 #if !defined(_FROM_ASM_)
 #ifdef __cplusplus
