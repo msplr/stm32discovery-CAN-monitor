@@ -1,0 +1,15 @@
+dependency-dir: ./src/
+
+target.arm:
+    - src/main.c
+    - src/board.c
+    - src/usbcfg.c
+
+depends:
+    - serial-can-bridge:
+        fork: nuft
+    - serial-datagram:
+        fork: stapelzeiger
+
+templates:
+    Makefile.include.jinja: src/src.mk

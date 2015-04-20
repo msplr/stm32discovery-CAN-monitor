@@ -3,6 +3,8 @@
 #include <chprintf.h>
 #include <string.h>
 #include <shell.h>
+#include <serial-can-bridge/serial_can_bridge.h>
+#include <serial-datagram/serial_datagram.h>
 #include "usbcfg.h"
 
 static THD_WORKING_AREA(led_thread_wa, 128);
@@ -31,36 +33,19 @@ static const CANConfig can1_config = {
          | (11 << 16)/* Time segment 1 (3 bits) */
          | (7 << 20) /* Time segment 2 (3 bits) */
          | (0 << 24) /* Resync jump width (2 bits) */
-#if 0
+#if 1
          | (1 << 30) /* Loopback mode enabled */
 #endif
 };
 
-#define CAN_FRAME_STD_ID_MASK    ((1<<11) - 1)
-#define CAN_FRAME_EXT_ID_MASK    ((1<<29) - 1)
-#define CAN_FRAME_EXT_FLAG       (1<<29)
-#define CAN_FRAME_RTR_FLAG       (1<<30)
-
-/** id bit layout:
- * [0-28]:  29 bit extended id
- * ([0-10]:  11 bit basic id)
- * [29]:    extended frame flag
- * [30]:    remote transmission request flag
- * [31]:    unused, set to 0
- */
-
-struct can_frame {
-    uint32_t id;
-    uint8_t dlc;
-    union {
-        uint8_t u8[8];
-        uint16_t u16[4];
-        uint32_t u32[2];
-    } data;
-};
-
 SerialUSBDriver SDU1;
 BaseSequentialStream* stdout;
+
+#define CAN_BRIDGE_RX_STACKSIZE 512
+#define CAN_BRIDGE_PRIO         NORMALPRIO
+
+void can_bridge(BaseAsynchronousChannel *chp);
+msg_t can_bridge_rx_thread(void *p);
 
 #define CAN_RX_QUEUE_SIZE   512
 #define CAN_TX_QUEUE_SIZE   512
@@ -201,7 +186,6 @@ void print_can_frame(BaseSequentialStream *out, struct can_frame *f)
             chprintf(out, "%03x: !%u\n", f->id & CAN_FRAME_STD_ID_MASK, f->dlc);
         }
     }
-    palTogglePad(GPIOD, GPIOD_LED3);
 }
 
 static void cmd_candump(BaseSequentialStream *chp, int argc, char *argv[])
@@ -243,6 +227,11 @@ int main(void) {
     usbConnectBus(serusbcfg.usbp);
     stdout = (BaseSequentialStream *)&SDU1;
 
+    bool run_bridge = false;
+    if (!palReadPad(GPIOA, GPIOA_BUTTON)) {
+        run_bridge = true;
+    }
+
     while (SDU1.config->usbp->state != USB_ACTIVE) {
         chThdSleepMilliseconds(100);
     }
@@ -250,10 +239,16 @@ int main(void) {
     can_init();
     chThdCreateStatic(can_tx_thread_wa, sizeof(can_tx_thread_wa), NORMALPRIO, can_tx_thread, NULL);
     chThdCreateStatic(can_rx_thread_wa, sizeof(can_rx_thread_wa), NORMALPRIO, can_rx_thread, NULL);
-    if (!palReadPad(GPIOA, GPIOA_BUTTON)) {
-        // can_bridge_run(stdout);
+
+    if (run_bridge) {
+        palSetPad(GPIOD, GPIOD_LED6);
+        can_bridge((BaseAsynchronousChannel *)&SDU1);
+        while (1) {
+            chThdSleepMilliseconds(100);
+        }
     }
 
+    palSetPad(GPIOD, GPIOD_LED3);
     shellInit();
     static thread_t *shelltp = NULL;
     static ShellConfig shell_cfg;
@@ -271,4 +266,84 @@ int main(void) {
         chThdSleepMilliseconds(500);
     }
     return 0;
+}
+
+void can_bridge(BaseAsynchronousChannel *chp)
+{
+    chThdCreateFromHeap(NULL, /* Use system heap */
+                        CAN_BRIDGE_RX_STACKSIZE,
+                        CAN_BRIDGE_PRIO,
+                        can_bridge_rx_thread,
+                        (void *)chp);
+
+    int len;
+    serial_datagram_rcv_handler_t rcv;
+
+    static uint8_t buf[32];
+    static char datagram_buf[64];
+
+    serial_datagram_rcv_handler_init(
+        &rcv,
+        datagram_buf,
+        sizeof(datagram_buf),
+        can_bridge_datagram_rcv_cb,
+        NULL);
+
+    while (1) {
+        len = chnReadTimeout(chp, buf, sizeof(buf), MS2ST(10));
+        if (len == 0) {
+            continue;
+        }
+        serial_datagram_receive(&rcv, buf, len);
+    }
+}
+
+void can_interface_send(struct can_frame *frame)
+{
+    struct can_frame *tx = (struct can_frame *)chPoolAlloc(&can_tx_pool);
+    if (tx == NULL) {
+        return;
+    }
+    tx->id = frame->id;
+    tx->dlc = frame->dlc;
+    tx->data.u32[0] = frame->data.u32[0];
+    tx->data.u32[1] = frame->data.u32[1];
+    if (chMBPost(&can_tx_queue, (msg_t)tx, MS2ST(100)) != MSG_OK) {
+        // couldn't post, free memory
+        chPoolFree(&can_tx_pool, tx);
+    }
+    return;
+}
+
+void serial_write(void *arg, const void *p, size_t len)
+{
+    BaseAsynchronousChannel *chp = (BaseAsynchronousChannel *)arg;
+    chnWrite(chp, p, len);
+}
+
+msg_t can_bridge_rx_thread(void *p)
+{
+    chRegSetThreadName("can_bridge_rx");
+
+    struct can_frame *framep;
+
+    static uint8_t outbuf[32];
+    size_t outlen;
+
+    /* Wait as long as the thread is not finished (semaphore not taken) */
+    while (1) {
+        msg_t m = chMBFetch(&can_rx_queue, (msg_t *)&framep, MS2ST(100));
+        if (m != MSG_OK) {
+            continue;
+        }
+
+        outlen = sizeof(outbuf);
+        if (can_bridge_frame_write(framep, outbuf, &outlen)) {
+            serial_datagram_send(outbuf, outlen, serial_write, p);
+        }
+
+        chPoolFree(&can_rx_pool, framep);
+    }
+
+    return MSG_OK;
 }

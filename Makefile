@@ -64,6 +64,7 @@ include $(CHIBIOS)/os/hal/ports/STM32/STM32F4xx/platform.mk
 include $(CHIBIOS)/os/hal/osal/rt/osal.mk
 include $(CHIBIOS)/os/rt/rt.mk
 include $(CHIBIOS)/os/rt/ports/ARMCMx/compilers/GCC/mk/port_stm32f4xx.mk
+include src/src.mk
 
 # Define linker script file here
 LDSCRIPT= $(PORTLD)/STM32F407xG.ld
@@ -78,7 +79,7 @@ CSRC = $(PORTSRC) \
        $(PLATFORMSRC) \
        $(CHIBIOS)/os/hal/lib/streams/chprintf.c \
        $(CHIBIOS)/os/various/shell.c \
-       src/board.c src/main.c src/usbcfg.c
+       $(PROJCSRC)
 
 # C++ sources that can be compiled in ARM or THUMB mode depending on the global
 # setting.
@@ -109,7 +110,8 @@ ASMSRC = $(PORTASM)
 
 INCDIR = $(PORTINC) $(KERNINC) $(TESTINC) \
          $(HALINC) $(OSALINC) $(PLATFORMINC) \
-         $(CHIBIOS)/os/hal/lib/streams/ $(CHIBIOS)/os/various/
+         $(CHIBIOS)/os/hal/lib/streams/ $(CHIBIOS)/os/various/ \
+         $(PROJINC)
 
 #
 # Project, sources and paths
@@ -165,7 +167,7 @@ UDEFS =
 UADEFS =
 
 # List all user directories here
-UINCDIR = src
+UINCDIR =
 
 # List the user directory to look for the libraries here
 ULIBDIR =
@@ -179,6 +181,10 @@ ULIBS =
 
 RULESPATH = $(CHIBIOS)/os/common/ports/ARMCMx/compilers/GCC
 include $(RULESPATH)/rules.mk
+
+.PHONY: packager
+packager: package.yml
+	python3 packager/packager.py
 
 .PHONY: flash
 flash: all
