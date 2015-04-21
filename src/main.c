@@ -67,7 +67,7 @@ static THD_FUNCTION(can_tx_thread, arg) {
         uint32_t id = framep->id;
         txf.RTR = 0;
         if (id & CAN_FRAME_EXT_FLAG) {
-            txf.SID = id & CAN_FRAME_EXT_ID_MASK;
+            txf.EID = id & CAN_FRAME_EXT_ID_MASK;
             txf.IDE = 1;
         } else {
             txf.SID = id & CAN_FRAME_STD_ID_MASK;
