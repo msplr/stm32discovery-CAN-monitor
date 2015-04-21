@@ -278,8 +278,48 @@ static void cmd_candump(BaseSequentialStream *chp, int argc, char *argv[])
     }
 }
 
+static void cmd_uavcan_id(BaseSequentialStream *chp, int argc, char *argv[])
+{
+    bool verbose = false;
+    if (argc == 1 && **argv == 'v') {
+        verbose = true;
+    }
+    can_rx_buffer_flush();
+    can_bridge_filter_id = CAN_FRAME_EXT_FLAG;
+    can_bridge_filter_mask = CAN_FRAME_EXT_FLAG;
+    while (1) {
+        if (palReadPad(GPIOA, GPIOA_BUTTON)) {
+            return;
+        }
+        struct can_frame *framep;
+        msg_t m = chMBFetch(&can_rx_queue, (msg_t *)&framep, MS2ST(100));
+        if (m != MSG_OK) {
+            continue;
+        }
+        union {
+            uint32_t value;
+            struct {
+                uint32_t tid:3;
+                uint32_t lf:1;
+                uint32_t fi:6;
+                uint32_t src:7;
+                uint32_t tt:2;
+                uint32_t dt:10;
+            } bit;
+        } id;
+        id.value = framep->id & CAN_FRAME_EXT_ID_MASK;
+        if (verbose) {
+            chprintf(chp, "%u type: %u from: %u frame: %u (%u)\n", id.bit.dt, id.bit.tt, id.bit.src, id.bit.fi, id.bit.lf);
+        } else {
+            chprintf(chp, "%u\n", id.bit.dt);
+        }
+        chPoolFree(&can_rx_pool, framep);
+    }
+}
+
 const ShellCommand shell_commands[] = {
   {"candump", cmd_candump},
+  {"uavcan_id", cmd_uavcan_id},
   {NULL, NULL}
 };
 
