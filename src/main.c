@@ -7,6 +7,10 @@
 #include <serial-datagram/serial_datagram.h>
 #include "usbcfg.h"
 
+void can_interface_send(struct can_frame *frame);
+void can_rx_buffer_flush(void);
+void can_tx_buffer_flush(void);
+
 static const CANConfig can1_config = {
     .mcr = (1 << 6)  /* Automatic bus-off management enabled. */
          | (1 << 2), /* Message are prioritized by order of arrival. */
@@ -93,26 +97,28 @@ static THD_FUNCTION(can_rx_thread, arg) {
     (void)arg;
     chRegSetThreadName("CAN rx");
     while (1) {
+        uint32_t id;
         CANRxFrame rxf;
         msg_t m = canReceive(&CAND1, CAN_ANY_MAILBOX, &rxf, MS2ST(1000));
         if (m != MSG_OK) {
             continue;
         }
-        // if (!can_id_passes_filter(id)) {
-        //     continue;
-        // }
+        if (rxf.IDE) {
+            id = rxf.EID | CAN_FRAME_EXT_FLAG;
+        } else {
+            id = rxf.SID;
+        }
+        if (rxf.RTR) {
+            id |= CAN_FRAME_RTR_FLAG;
+        }
+        if (!can_bridge_id_passes_filter(id)) {
+            continue;
+        }
         struct can_frame *f = (struct can_frame *)chPoolAlloc(&can_rx_pool);
         if (f == NULL) {
             continue;
         }
-        if (rxf.IDE) {
-            f->id = rxf.EID | CAN_FRAME_EXT_FLAG;
-        } else {
-            f->id = rxf.SID;
-        }
-        if (rxf.RTR) {
-            f->id |= CAN_FRAME_RTR_FLAG;
-        }
+        f->id = id;
         f->dlc = rxf.DLC;
         f->data.u32[0] = rxf.data32[0];
         f->data.u32[1] = rxf.data32[1];
@@ -156,6 +162,22 @@ void can_init(void)
 #endif
 }
 
+void can_rx_buffer_flush(void)
+{
+    void *p;
+    while (chMBFetch(&can_rx_queue, (msg_t *)&p, TIME_IMMEDIATE) == MSG_OK) {
+        chPoolFree(&can_rx_pool, p);
+    }
+}
+
+void can_tx_buffer_flush(void)
+{
+    void *p;
+    while (chMBFetch(&can_tx_queue, (msg_t *)&p, TIME_IMMEDIATE) == MSG_OK) {
+        chPoolFree(&can_tx_pool, p);
+    }
+}
+
 char hex4(uint8_t b)
 {
     b &= 0x0f;
@@ -178,23 +200,70 @@ void print_can_frame(BaseSequentialStream *out, struct can_frame *f)
     buf[3*i] = 0;
     if (!(f->id & CAN_FRAME_RTR_FLAG)) {
         if (f->id & CAN_FRAME_EXT_FLAG) {
-            chprintf(out, "%08x:E %s\n", f->id & CAN_FRAME_EXT_ID_MASK, buf);
+            chprintf(out, "0x%08x [%u] %s (E)\n", f->id & CAN_FRAME_EXT_ID_MASK, f->dlc, buf);
         } else {
-            chprintf(out, "%03x: %s\n", f->id & CAN_FRAME_STD_ID_MASK, buf);
+            chprintf(out, "0x%03x [%u] %s\n", f->id & CAN_FRAME_STD_ID_MASK, f->dlc, buf);
         }
     } else {
         if (f->id & CAN_FRAME_EXT_FLAG) {
-            chprintf(out, "%08x:E %u\n", f->id & CAN_FRAME_EXT_ID_MASK, f->dlc);
+            chprintf(out, "0x%08x: [%u] (E,RTR)\n", f->id & CAN_FRAME_EXT_ID_MASK, f->dlc);
         } else {
-            chprintf(out, "%03x: !%u\n", f->id & CAN_FRAME_STD_ID_MASK, f->dlc);
+            chprintf(out, "0x%03x: [%u] (RTR)\n", f->id & CAN_FRAME_STD_ID_MASK, f->dlc);
         }
     }
 }
 
+uint32_t hex_read(const char *s)
+{
+    uint32_t x = 0;
+    while (*s) {
+        if (*s >= '0' && *s <= '9') {
+            x = (x << 4) | (*s - '0');
+        } else if (*s >= 'a' && *s <= 'f') {
+            x = (x << 4) | (*s - 'a' + 0x0a);
+        } else if (*s >= 'A' && *s <= 'F') {
+            x = (x << 4) | (*s - 'A' + 0x0A);
+        } else {
+            break;
+        }
+        s++;
+    }
+    return x;
+}
+
 static void cmd_candump(BaseSequentialStream *chp, int argc, char *argv[])
 {
-    (void)argc;
-    (void)argv;
+    static const char *usage = "usage: candump [<id> <mask> [s|e]]\n";
+    if (argc >= 2) {
+        uint32_t id, mask;
+        enum {extended, standard, dont_care} ext;
+        if (argc == 2) {
+            ext = dont_care;
+        } else if (*argv[2] == 's' || *argv[2] == 'S') {
+            ext = standard;
+        } else if (*argv[2] == 'e' || *argv[2] == 'E') {
+            ext = extended;
+        } else {
+            chprintf(chp, usage);
+            return;
+        }
+        id = hex_read(argv[0]);
+        mask = hex_read(argv[1]) & CAN_FRAME_EXT_ID_MASK;
+        chprintf(chp, "filter id: %x mask: %x type: %c\n", id, mask, ext == extended ? 'E' : ext == standard ? 'S' : '?');
+        if (ext == extended) {
+            id = (id & CAN_FRAME_EXT_ID_MASK) | CAN_FRAME_EXT_FLAG;
+            mask |= CAN_FRAME_EXT_FLAG;
+        } else if (standard) {
+            id &= CAN_FRAME_STD_ID_MASK;
+            mask &= CAN_FRAME_STD_ID_MASK | CAN_FRAME_EXT_FLAG;
+        }
+        can_rx_buffer_flush();
+        can_bridge_filter_id = id;
+        can_bridge_filter_mask = mask;
+    } else if (argc != 0) {
+        chprintf(chp, usage);
+        return;
+    }
     while (1) {
         if (palReadPad(GPIOA, GPIOA_BUTTON)) {
             return;
@@ -218,21 +287,19 @@ int main(void) {
     halInit();
     chSysInit();
 
-    // USB Serial Driver
-    usbStop(serusbcfg.usbp);
-    chThdSleepMilliseconds(100);
-    sduObjectInit(&SDU1);
-    sduStart(&SDU1, &serusbcfg);
-    usbDisconnectBus(serusbcfg.usbp);
-    chThdSleepMilliseconds(100);
-    usbStart(serusbcfg.usbp, &usbcfg);
-    usbConnectBus(serusbcfg.usbp);
-    stdout = (BaseSequentialStream *)&SDU1;
-
     bool run_bridge = false;
     if (!palReadPad(GPIOA, GPIOA_BUTTON)) {
         run_bridge = true;
     }
+
+    // USB Serial Driver
+    sduObjectInit(&SDU1);
+    sduStart(&SDU1, &serusbcfg);
+    usbDisconnectBus(serusbcfg.usbp);
+    chThdSleepMilliseconds(1000);
+    usbStart(serusbcfg.usbp, &usbcfg);
+    usbConnectBus(serusbcfg.usbp);
+    stdout = (BaseSequentialStream *)&SDU1;
 
     while (SDU1.config->usbp->state != USB_ACTIVE) {
         chThdSleepMilliseconds(100);
@@ -240,7 +307,7 @@ int main(void) {
 
     can_init();
     chThdCreateStatic(can_tx_thread_wa, sizeof(can_tx_thread_wa), NORMALPRIO, can_tx_thread, NULL);
-    chThdCreateStatic(can_rx_thread_wa, sizeof(can_rx_thread_wa), NORMALPRIO, can_rx_thread, NULL);
+    chThdCreateStatic(can_rx_thread_wa, sizeof(can_rx_thread_wa), NORMALPRIO+1, can_rx_thread, NULL);
 
     if (run_bridge) {
         LED_BLUE(1);
