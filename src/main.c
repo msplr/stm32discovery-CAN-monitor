@@ -255,7 +255,7 @@ static void cmd_candump(BaseSequentialStream *chp, int argc, char *argv[])
             mask |= CAN_FRAME_EXT_FLAG;
         } else if (standard) {
             id &= CAN_FRAME_STD_ID_MASK;
-            mask &= CAN_FRAME_STD_ID_MASK | CAN_FRAME_EXT_FLAG;
+            mask = (mask & CAN_FRAME_STD_ID_MASK) | CAN_FRAME_EXT_FLAG;
         }
         can_rx_buffer_flush();
         can_bridge_filter_id = id;
